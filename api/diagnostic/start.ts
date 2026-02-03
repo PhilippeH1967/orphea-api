@@ -2,7 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { cors } from '../../lib/cors'
 import { checkIPRateLimit, checkEmailRateLimit, checkDailyQuota } from '../../lib/rate-limit'
 import { checkHoneypot, verifyRecaptcha, generateSessionToken, isValidEmail } from '../../lib/security'
-import { createLead, hasRecentDiagnostic } from '../../lib/airtable'
+import { createLead, hasRecentDiagnostic } from '../../lib/notion'
 import { startDiagnosticSchema } from '../../lib/schemas'
 import { ZodError } from 'zod'
 

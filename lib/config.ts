@@ -9,9 +9,9 @@ const envSchema = z.object({
   UPSTASH_REDIS_REST_URL: z.string().optional(),
   UPSTASH_REDIS_REST_TOKEN: z.string().optional(),
 
-  // Airtable
-  AIRTABLE_API_KEY: z.string().optional(),
-  AIRTABLE_BASE_ID: z.string().optional(),
+  // Notion
+  NOTION_API_KEY: z.string().optional(),
+  NOTION_DATABASE_ID: z.string().optional(),
 
   // Anthropic Claude
   ANTHROPIC_API_KEY: z.string().optional(),
