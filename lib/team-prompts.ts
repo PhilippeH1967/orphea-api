@@ -222,3 +222,41 @@ export function getAgent(agentId: string): AgentConfig | null {
   }
   return null
 }
+
+// Règles de routage pour le classifier
+export const ROUTING_RULES = {
+  lea: {
+    keywords: ['roi', 'budget', 'stratégie', 'strategie', 'prioriser', 'commencer', 'pertinent', 'pertinence', 'business', 'valeur', 'investir', 'investissement', 'coût', 'cout', 'rentable', 'rentabilité', 'objectif', 'vision', 'transformation', 'digitale', 'digital', 'priorité', 'priorite', 'opportunité', 'opportunite', 'secteur', 'industrie'],
+    intents: ['advice', 'strategy', 'evaluation', 'prioritization'],
+  },
+  marc: {
+    keywords: ['technique', 'intégration', 'integration', 'api', 'rag', 'chatgpt', 'copilot', 'claude', 'llm', 'outil', 'outils', 'erp', 'crm', 'salesforce', 'microsoft', 'automatisation', 'workflow', 'n8n', 'code', 'développement', 'developpement', 'architecture', 'sécurité', 'securite', 'données', 'donnees', 'faisable', 'faisabilité', 'faisabilite', 'chatbot', 'bot', 'comment ça marche', 'comment ca marche', 'fonctionnement'],
+    intents: ['technical', 'implementation', 'tools', 'how-it-works'],
+  },
+  sophie: {
+    keywords: ['projet', 'étape', 'etape', 'planning', 'durée', 'duree', 'temps', 'combien de temps', 'livrable', 'formation', 'équipe', 'equipe', 'accompagnement', 'méthodologie', 'methodologie', 'gouvernance', 'loi 25', 'rgpd', 'conformité', 'conformite', 'changement', 'adoption', 'déploiement', 'deploiement', 'calendrier', 'semaines', 'mois'],
+    intents: ['project', 'timeline', 'methodology', 'training', 'governance'],
+  },
+}
+
+// Prompt pour le classifier
+export const ROUTER_SYSTEM_PROMPT = `Tu es un routeur intelligent qui analyse les questions des visiteurs et détermine quel agent ORPHEA est le mieux placé pour répondre.
+
+Les 3 agents disponibles sont :
+- **lea** : Stratège IA - Questions sur ROI, budget, stratégie, priorisation, pertinence pour le secteur, transformation digitale
+- **marc** : Expert Technique - Questions sur outils (ChatGPT, Copilot, RAG), intégrations (API, ERP, CRM), faisabilité technique, fonctionnement
+- **sophie** : Chef de Projet - Questions sur méthodologie, planning, durée, étapes, formation, gouvernance (Loi 25, RGPD), accompagnement
+
+Règles :
+1. Réponds UNIQUEMENT avec le nom de l'agent en minuscules : "lea", "marc" ou "sophie"
+2. Si la question est ambiguë ou générale ("parlez-moi de l'IA", "bonjour"), choisis "lea" par défaut
+3. Ne donne AUCUNE explication, juste le nom de l'agent
+
+Exemples :
+- "L'IA est-elle pertinente pour mon entreprise ?" → lea
+- "C'est quoi un RAG ?" → marc
+- "Combien de temps dure un projet ?" → sophie
+- "Bonjour" → lea
+- "Peut-on intégrer à Salesforce ?" → marc
+- "Comment formez-vous les équipes ?" → sophie
+`

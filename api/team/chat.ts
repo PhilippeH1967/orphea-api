@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { z, ZodError } from 'zod'
-import { getAgent, AgentId, AGENTS } from '../../lib/team-prompts'
+import { getAgent, AgentId, AGENTS, ROUTING_RULES, ROUTER_SYSTEM_PROMPT } from '../../lib/team-prompts'
 
 // Configuration
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'https://orphea-conseil.com,http://localhost:3000,http://localhost:3001,http://localhost:3002').split(',').map(s => s.trim())
@@ -55,8 +55,9 @@ async function getAnthropic() {
 // Schéma de validation
 const chatSchema = z.object({
   sessionId: z.string().uuid(),
-  agent: z.enum(['lea', 'marc', 'sophie']),
+  agent: z.enum(['lea', 'marc', 'sophie', 'auto']),
   message: z.string().min(1).max(2000).transform(s => s.trim()),
+  isReturningUser: z.boolean().optional(), // Pour personnaliser l'accueil
 })
 
 // CORS middleware
@@ -85,6 +86,84 @@ function sanitizeInput(input: string): string {
     .replace(/\[ASSISTANT\]/gi, '')
     .replace(/<\|.*?\|>/g, '')
     .trim()
+}
+
+// Route question to the best agent using keyword matching (fast, no API call)
+function routeByKeywords(message: string): AgentId {
+  const lowerMessage = message.toLowerCase()
+
+  const scores: Record<AgentId, number> = { lea: 0, marc: 0, sophie: 0 }
+
+  for (const [agentId, rules] of Object.entries(ROUTING_RULES)) {
+    for (const keyword of rules.keywords) {
+      if (lowerMessage.includes(keyword)) {
+        scores[agentId as AgentId] += 1
+      }
+    }
+  }
+
+  // Find agent with highest score
+  const maxScore = Math.max(...Object.values(scores))
+  if (maxScore === 0) {
+    return 'lea' // Default to Léa for ambiguous questions
+  }
+
+  const bestAgent = Object.entries(scores).find(([, score]) => score === maxScore)
+  return (bestAgent?.[0] as AgentId) || 'lea'
+}
+
+// Route question using Claude (more accurate but costs API call)
+async function routeByLLM(message: string): Promise<AgentId> {
+  const client = await getAnthropic()
+
+  if (!client) {
+    // Fallback to keyword routing in dev mode
+    return routeByKeywords(message)
+  }
+
+  try {
+    const response = await client.messages.create({
+      model: 'claude-3-haiku-20240307',
+      max_tokens: 10,
+      system: ROUTER_SYSTEM_PROMPT,
+      messages: [{ role: 'user', content: message }],
+    })
+
+    const textBlock = response.content.find(block => block.type === 'text')
+    const agentName = textBlock?.text?.toLowerCase().trim() || 'lea'
+
+    if (agentName === 'lea' || agentName === 'marc' || agentName === 'sophie') {
+      return agentName as AgentId
+    }
+    return 'lea'
+  } catch (error) {
+    console.error('Router LLM error:', error)
+    return routeByKeywords(message)
+  }
+}
+
+// Smart router: uses keywords first, LLM for ambiguous cases
+async function smartRoute(message: string): Promise<AgentId> {
+  const keywordResult = routeByKeywords(message)
+
+  // If keywords give a clear answer (score > 1), use it
+  const lowerMessage = message.toLowerCase()
+  let maxScore = 0
+  for (const rules of Object.values(ROUTING_RULES)) {
+    let score = 0
+    for (const keyword of rules.keywords) {
+      if (lowerMessage.includes(keyword)) score++
+    }
+    if (score > maxScore) maxScore = score
+  }
+
+  // Clear match with keywords
+  if (maxScore >= 2) {
+    return keywordResult
+  }
+
+  // Ambiguous: use LLM
+  return routeByLLM(message)
 }
 
 // Get conversation from Redis
@@ -201,8 +280,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const input = chatSchema.parse(req.body)
     const sanitizedMessage = sanitizeInput(input.message)
-    const agentConfig = getAgent(input.agent)
 
+    // Determine the agent to use
+    let targetAgent: AgentId
+    let wasAutoRouted = false
+
+    if (input.agent === 'auto') {
+      // Smart routing based on the message
+      targetAgent = await smartRoute(sanitizedMessage)
+      wasAutoRouted = true
+    } else {
+      targetAgent = input.agent as AgentId
+    }
+
+    const agentConfig = getAgent(targetAgent)
     if (!agentConfig) {
       return res.status(400).json({ error: 'Agent inconnu' })
     }
@@ -211,38 +302,48 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let state = await getConversation(input.sessionId)
 
     if (!state) {
-      // New conversation - initialize with greeting
-      state = initConversation(input.sessionId, input.agent)
+      // New conversation
+      const isReturning = input.isReturningUser === true
+
+      // Initialize with custom greeting if returning user
+      state = initConversation(input.sessionId, targetAgent)
+
+      if (isReturning) {
+        // Personalized greeting for returning users
+        state.messages[0].content = `Rebonjour ! Je suis ${agentConfig.name}. Ravi de te revoir ! Comment puis-je t'aider aujourd'hui ?`
+      }
+
       await saveConversation(state)
 
       // Return the greeting as first message
       return res.status(200).json({
         success: true,
-        message: agentConfig.greeting,
-        agent: input.agent,
+        message: state.messages[0].content,
+        agent: targetAgent,
         agentName: agentConfig.name,
         agentRole: agentConfig.role,
         isGreeting: true,
+        wasAutoRouted,
       })
     }
 
-    // Check if agent changed
-    const agentChanged = state.currentAgent !== input.agent
+    // Check if agent changed (either by user choice or auto-routing)
+    const agentChanged = state.currentAgent !== targetAgent
     if (agentChanged) {
       // Add switch context message
-      const switchMessage = buildSwitchContext(state.messages, input.agent)
-      state.messages.push({ role: 'assistant', content: switchMessage, agent: input.agent })
-      state.currentAgent = input.agent
+      const switchMessage = buildSwitchContext(state.messages, targetAgent)
+      state.messages.push({ role: 'assistant', content: switchMessage, agent: targetAgent })
+      state.currentAgent = targetAgent
     }
 
     // Add user message
     state.messages.push({ role: 'user', content: sanitizedMessage })
 
     // Get agent response
-    const agentResponse = await callClaude(state.messages, input.agent)
+    const agentResponse = await callClaude(state.messages, targetAgent)
 
     // Add agent response
-    state.messages.push({ role: 'assistant', content: agentResponse, agent: input.agent })
+    state.messages.push({ role: 'assistant', content: agentResponse, agent: targetAgent })
 
     // Save state
     await saveConversation(state)
@@ -250,11 +351,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({
       success: true,
       message: agentResponse,
-      agent: input.agent,
+      agent: targetAgent,
       agentName: agentConfig.name,
       agentRole: agentConfig.role,
       messageCount: state.messages.length,
       agentChanged,
+      wasAutoRouted,
     })
 
   } catch (error) {
