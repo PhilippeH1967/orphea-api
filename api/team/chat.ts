@@ -304,18 +304,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!state) {
       // New conversation
       const isReturning = input.isReturningUser === true
-
-      // Initialize with custom greeting if returning user
       state = initConversation(input.sessionId, targetAgent)
 
       if (isReturning) {
-        // Personalized greeting for returning users
         state.messages[0].content = `Rebonjour ! Je suis ${agentConfig.name}. Ravi de te revoir ! Comment puis-je t'aider aujourd'hui ?`
       }
 
-      await saveConversation(state)
+      // In auto mode with a real question (not just greeting), process the question immediately
+      const isGreetingOnly = /^(bonjour|salut|hello|hi|coucou|hey)[\s!?.]*$/i.test(sanitizedMessage)
 
-      // Return the greeting as first message
+      if (wasAutoRouted && !isGreetingOnly) {
+        // Add user message and get response directly (skip greeting-only response)
+        state.messages.push({ role: 'user', content: sanitizedMessage })
+        const agentResponse = await callClaude(state.messages, targetAgent)
+        state.messages.push({ role: 'assistant', content: agentResponse, agent: targetAgent })
+        await saveConversation(state)
+
+        return res.status(200).json({
+          success: true,
+          message: agentResponse,
+          agent: targetAgent,
+          agentName: agentConfig.name,
+          agentRole: agentConfig.role,
+          isGreeting: false,
+          wasAutoRouted,
+          messageCount: state.messages.length,
+        })
+      }
+
+      // Normal mode or greeting: return greeting first
+      await saveConversation(state)
       return res.status(200).json({
         success: true,
         message: state.messages[0].content,
