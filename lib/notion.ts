@@ -4,13 +4,7 @@ import { config, Sector } from './config'
 const NOTION_API_URL = 'https://api.notion.com/v1'
 const NOTION_VERSION = '2022-06-28'
 
-interface NotionHeaders {
-  'Authorization': string
-  'Content-Type': string
-  'Notion-Version': string
-}
-
-function getHeaders(): NotionHeaders | null {
+function getHeaders(): Record<string, string> | null {
   if (!config.NOTION_API_KEY) return null
   return {
     'Authorization': `Bearer ${config.NOTION_API_KEY}`,
@@ -80,7 +74,7 @@ export async function createLead(lead: Omit<Lead, 'createdAt' | 'status'>): Prom
       return null
     }
 
-    const data = await response.json()
+    const data = await response.json() as { id: string }
     return data.id
   } catch (error) {
     console.error('Notion create error:', error)
@@ -109,7 +103,7 @@ async function findLeadBySessionId(sessionId: string): Promise<string | null> {
 
     if (!response.ok) return null
 
-    const data = await response.json()
+    const data = await response.json() as { results?: { id: string }[] }
     return data.results?.[0]?.id || null
   } catch (error) {
     console.error('Notion query error:', error)
@@ -186,8 +180,8 @@ export async function hasRecentDiagnostic(email: string): Promise<boolean> {
 
     if (!response.ok) return false
 
-    const data = await response.json()
-    return data.results?.length > 0
+    const data = await response.json() as { results?: unknown[] }
+    return (data.results?.length ?? 0) > 0
   } catch (error) {
     console.error('Notion check error:', error)
     return false

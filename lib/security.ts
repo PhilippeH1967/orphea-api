@@ -23,11 +23,11 @@ export async function verifyRecaptcha(token: string): Promise<{ success: boolean
       }),
     })
 
-    const data = await response.json()
+    const data = await response.json() as { success: boolean; score?: number }
 
     return {
-      success: data.success && data.score >= 0.5,
-      score: data.score || 0,
+      success: data.success && (data.score ?? 0) >= 0.5,
+      score: data.score ?? 0,
     }
   } catch (error) {
     console.error('reCAPTCHA verification error:', error)

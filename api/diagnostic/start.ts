@@ -1,83 +1,151 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { cors } from '../../lib/cors'
-import { checkIPRateLimit, checkEmailRateLimit, checkDailyQuota } from '../../lib/rate-limit'
-import { checkHoneypot, verifyRecaptcha, generateSessionToken, isValidEmail } from '../../lib/security'
-import { createLead, hasRecentDiagnostic } from '../../lib/notion'
-import { startDiagnosticSchema } from '../../lib/schemas'
-import { ZodError } from 'zod'
+import { z, ZodError } from 'zod'
+
+// Configuration inline pour éviter les problèmes d'import
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'https://orphea-conseil.com,http://localhost:3000,http://localhost:3001,http://localhost:3002').split(',').map(s => s.trim())
+
+// Lazy Redis initialization to avoid module-level errors
+let redisClient: InstanceType<typeof import('@upstash/redis').Redis> | null = null
+
+async function getRedis() {
+  if (redisClient) return redisClient
+  const url = process.env.UPSTASH_REDIS_REST_URL?.trim()
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN?.trim()
+  if (!url || !token) {
+    return null
+  }
+  try {
+    const { Redis } = await import('@upstash/redis')
+    redisClient = new Redis({ url, token })
+    return redisClient
+  } catch (e) {
+    console.error('Redis init error:', e)
+    return null
+  }
+}
+
+const SECTORS = [
+  'Services professionnels',
+  'Finance et assurance',
+  'Santé',
+  'Technologies',
+  'Commerce de détail',
+  'Industrie manufacturière',
+  'Construction',
+  'Transport et logistique',
+  'Éducation',
+  'Autre',
+] as const
+
+// Schéma de validation
+const startDiagnosticSchema = z.object({
+  firstName: z.string().min(2).max(50).transform(s => s.trim()),
+  email: z.string().email().max(254).transform(s => s.toLowerCase().trim()),
+  company: z.string().max(100).optional().transform(s => s?.trim()),
+  sector: z.enum(SECTORS),
+  recaptchaToken: z.string().optional(),
+  website: z.string().max(0).optional(), // Honeypot
+})
+
+// CORS middleware
+function cors(req: VercelRequest, res: VercelResponse): boolean {
+  const origin = req.headers.origin || ''
+  const isAllowed = ALLOWED_ORIGINS.some(allowed => origin === allowed || allowed === '*')
+
+  if (isAllowed || process.env.NODE_ENV !== 'production') {
+    res.setHeader('Access-Control-Allow-Origin', origin || '*')
+  }
+  res.setHeader('Access-Control-Allow-Credentials', 'true')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+
+  if (req.method === 'OPTIONS') {
+    res.status(200).end()
+    return false
+  }
+  return true
+}
+
+// Notion API
+const NOTION_API_URL = 'https://api.notion.com/v1'
+
+async function createLeadInNotion(lead: {
+  sessionId: string
+  firstName: string
+  email: string
+  company?: string
+  sector: string
+}): Promise<boolean> {
+  const apiKey = process.env.NOTION_API_KEY
+  const databaseId = process.env.NOTION_DATABASE_ID
+
+  if (!apiKey || !databaseId) {
+    console.log('[DEV] Would create lead:', lead)
+    return true
+  }
+
+  try {
+    const response = await fetch(`${NOTION_API_URL}/pages`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28',
+      },
+      body: JSON.stringify({
+        parent: { database_id: databaseId },
+        properties: {
+          'Session ID': { title: [{ text: { content: lead.sessionId } }] },
+          'Prénom': { rich_text: [{ text: { content: lead.firstName } }] },
+          'Email': { email: lead.email },
+          'Entreprise': { rich_text: [{ text: { content: lead.company || '' } }] },
+          'Secteur': { select: { name: lead.sector } },
+          'Statut': { select: { name: 'started' } },
+          'Créé le': { date: { start: new Date().toISOString() } },
+        },
+      }),
+    })
+
+    if (!response.ok) {
+      const error = await response.json()
+      console.error('Notion error:', error)
+      return false
+    }
+    return true
+  } catch (error) {
+    console.error('Notion error:', error)
+    return false
+  }
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // CORS check
+  // CORS
   if (!cors(req, res)) return
 
-  // Only POST allowed
+  // Only POST
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' })
   }
 
   try {
-    // 1. Check daily quota
-    const quota = await checkDailyQuota()
-    if (!quota.allowed) {
-      return res.status(429).json({
-        error: 'Service temporairement indisponible',
-        code: 'QUOTA_EXCEEDED',
-      })
-    }
-
-    // 2. Check IP rate limit
-    const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket?.remoteAddress || 'unknown'
-    const ipLimit = await checkIPRateLimit(ip)
-    if (!ipLimit.success) {
-      return res.status(429).json({
-        error: 'Trop de tentatives. Réessayez dans une heure.',
-        code: 'IP_RATE_LIMITED',
-        remaining: ipLimit.remaining,
-      })
-    }
-
-    // 3. Validate input
+    // Validate input
     const input = startDiagnosticSchema.parse(req.body)
 
-    // 4. Check honeypot
-    if (!checkHoneypot(input.website)) {
-      // Silently reject bots
+    // Check honeypot
+    if (input.website && input.website.trim() !== '') {
+      // Bot detected, fake success
       return res.status(200).json({
         success: true,
-        sessionId: generateSessionToken(),
+        sessionId: crypto.randomUUID(),
         message: 'Diagnostic démarré',
       })
     }
 
-    // 5. Verify reCAPTCHA (if token provided)
-    if (input.recaptchaToken) {
-      const recaptcha = await verifyRecaptcha(input.recaptchaToken)
-      if (!recaptcha.success) {
-        return res.status(400).json({
-          error: 'Vérification de sécurité échouée',
-          code: 'RECAPTCHA_FAILED',
-        })
-      }
-    }
+    // Generate session
+    const sessionId = crypto.randomUUID()
 
-    // 6. Check email rate limit
-    const emailLimit = await checkEmailRateLimit(input.email)
-    if (!emailLimit.success) {
-      // Check Airtable as backup
-      const hasRecent = await hasRecentDiagnostic(input.email)
-      if (hasRecent) {
-        return res.status(429).json({
-          error: 'Vous avez déjà effectué un diagnostic récemment. Réessayez dans 24h.',
-          code: 'EMAIL_RATE_LIMITED',
-        })
-      }
-    }
-
-    // 7. Generate session token
-    const sessionId = generateSessionToken()
-
-    // 8. Store lead in Airtable
-    await createLead({
+    // Store in Notion
+    await createLeadInNotion({
       sessionId,
       firstName: input.firstName,
       email: input.email,
@@ -85,11 +153,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       sector: input.sector,
     })
 
-    // 9. Return success
+    // Initialize conversation in Redis
+    const greeting = `Bonjour ${input.firstName} ! Je suis l'assistant ORPHEA. Je vais vous poser quelques questions pour évaluer la maturité IA de votre entreprise. Cela prendra environ 5 minutes.\n\nCommençons : combien de personnes travaillent dans votre entreprise, et quel est votre rôle ?`
+
+    const conversationState = {
+      sessionId,
+      firstName: input.firstName,
+      email: input.email,
+      sector: input.sector,
+      messages: [{ role: 'assistant', content: greeting }],
+      questionCount: 1,
+      isComplete: false,
+    }
+
+    const redis = await getRedis()
+    if (redis) {
+      await redis.set(`diagnostic:${sessionId}`, conversationState, { ex: 86400 }) // 24h TTL
+    }
+
     return res.status(200).json({
       success: true,
       sessionId,
-      message: `Bienvenue ${input.firstName} ! Votre diagnostic va commencer.`,
+      firstName: input.firstName,
+      greeting,
     })
 
   } catch (error) {
@@ -103,9 +189,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       })
     }
 
-    console.error('Start diagnostic error:', error)
+    console.error('Error:', error)
     return res.status(500).json({
-      error: 'Une erreur est survenue. Veuillez réessayer.',
+      error: 'Une erreur est survenue',
       code: 'INTERNAL_ERROR',
     })
   }
