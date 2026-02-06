@@ -176,31 +176,48 @@ function shouldRedirect(message: string, currentAgent: AgentId): AgentId | null 
     'technique', 'techniquement', 'outil', 'outils', 'code', 'développer', 'chatgpt',
     'copilot', 'claude', 'erp', 'crm', 'sharepoint', 'automatisation', 'workflow',
     'fine-tuning', 'fine tuning', 'prompt', 'embedding', 'vector', 'elasticsearch',
-    'architecture', 'connecteur', 'indexer', 'indexation'
+    'architecture technique', 'connecteur', 'indexer', 'indexation', 'configurer'
   ]
 
-  // If current agent is not Marc and message contains technical keywords
-  if (currentAgent !== 'marc') {
-    const hasTechnicalKeyword = technicalKeywords.some(kw => lowerMessage.includes(kw))
-    if (hasTechnicalKeyword) {
-      return 'marc'
-    }
-  }
+  // Strategy keywords that should go to Léa
+  const strategyKeywords = [
+    'stratégie', 'strategie', 'roi', 'retour sur investissement', 'budget',
+    'prioriser', 'priorité', 'priorite', 'business', 'valeur ajoutée',
+    'pertinent', 'pertinence', 'commencer', 'débuter', 'par où',
+    'investir', 'investissement', 'rentable', 'rentabilité', 'objectif business'
+  ]
 
   // Project/methodology keywords that should go to Sophie
   const projectKeywords = [
-    'étape', 'etape', 'planning', 'durée', 'duree', 'combien de temps',
+    'planning', 'durée', 'duree', 'combien de temps', 'délai', 'delai',
     'méthodologie', 'methodologie', 'gouvernance', 'loi 25', 'rgpd',
-    'formation', 'équipe', 'equipe', 'accompagnement', 'livrable'
+    'formation', 'accompagnement', 'livrable', 'étapes du projet', 'déroulement'
   ]
 
-  if (currentAgent !== 'sophie') {
-    const hasProjectKeyword = projectKeywords.some(kw => lowerMessage.includes(kw))
-    // Only redirect if it's clearly a project question (2+ keywords)
-    const projectScore = projectKeywords.filter(kw => lowerMessage.includes(kw)).length
-    if (projectScore >= 2) {
-      return 'sophie'
-    }
+  // Calculate scores for each agent
+  const techScore = technicalKeywords.filter(kw => lowerMessage.includes(kw)).length
+  const strategyScore = strategyKeywords.filter(kw => lowerMessage.includes(kw)).length
+  const projectScore = projectKeywords.filter(kw => lowerMessage.includes(kw)).length
+
+  // Find the best agent based on keyword matches
+  const scores = [
+    { agent: 'marc' as AgentId, score: techScore },
+    { agent: 'lea' as AgentId, score: strategyScore },
+    { agent: 'sophie' as AgentId, score: projectScore },
+  ]
+
+  // Sort by score descending
+  scores.sort((a, b) => b.score - a.score)
+
+  // Only redirect if:
+  // 1. Best agent is different from current
+  // 2. Best agent has a score >= 1
+  // 3. Best agent score is clearly higher than current agent's score
+  const bestMatch = scores[0]
+  const currentScore = scores.find(s => s.agent === currentAgent)?.score || 0
+
+  if (bestMatch.agent !== currentAgent && bestMatch.score >= 1 && bestMatch.score > currentScore) {
+    return bestMatch.agent
   }
 
   return null // No redirect needed
@@ -299,7 +316,7 @@ async function callClaude(messages: Message[], agentId: AgentId): Promise<string
 
   const response = await client.messages.create({
     model: 'claude-3-haiku-20240307',
-    max_tokens: 500,
+    max_tokens: 1000,
     system: agentConfig.systemPrompt,
     messages: claudeMessages,
   })
