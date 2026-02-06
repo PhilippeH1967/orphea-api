@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { z, ZodError } from 'zod'
 import { getAgent, AgentId, AGENTS, ROUTING_RULES, ROUTER_SYSTEM_PROMPT } from '../../lib/team-prompts'
+import { findRelevantArticles, formatArticleCitation } from '../../lib/articles-index'
 
 // Configuration
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'https://orphea-conseil.com,http://localhost:3000,http://localhost:3001,http://localhost:3002').split(',').map(s => s.trim())
@@ -373,7 +374,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (wasAutoRouted && !isGreetingOnly) {
         // Add user message and get response directly (skip greeting-only response)
         state.messages.push({ role: 'user', content: sanitizedMessage })
-        const agentResponse = await callClaude(state.messages, targetAgent)
+        let agentResponse = await callClaude(state.messages, targetAgent)
+
+        // Add relevant article citations if applicable
+        const relevantArticles = findRelevantArticles(sanitizedMessage, targetAgent)
+        const articleCitation = formatArticleCitation(relevantArticles)
+        if (articleCitation) {
+          agentResponse += articleCitation
+        }
+
         state.messages.push({ role: 'assistant', content: agentResponse, agent: targetAgent })
         await saveConversation(state)
 
@@ -386,6 +395,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           isGreeting: false,
           wasAutoRouted,
           messageCount: state.messages.length,
+          articlesCited: relevantArticles.map(a => a.slug),
         })
       }
 
@@ -421,7 +431,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     state.messages.push({ role: 'user', content: sanitizedMessage })
 
     // Get agent response
-    const agentResponse = await callClaude(state.messages, targetAgent)
+    let agentResponse = await callClaude(state.messages, targetAgent)
+
+    // Add relevant article citations if applicable
+    const relevantArticles = findRelevantArticles(sanitizedMessage, targetAgent)
+    const articleCitation = formatArticleCitation(relevantArticles)
+    if (articleCitation) {
+      agentResponse += articleCitation
+    }
 
     // Add agent response
     state.messages.push({ role: 'assistant', content: agentResponse, agent: targetAgent })
@@ -438,6 +455,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       messageCount: state.messages.length,
       agentChanged,
       wasAutoRouted,
+      articlesCited: relevantArticles.map(a => a.slug),
     })
 
   } catch (error) {
