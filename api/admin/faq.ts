@@ -106,67 +106,140 @@ async function listFAQs(req: VercelRequest, res: VercelResponse) {
   }
 }
 
-// POST - Approve or Reject FAQ
-async function updateFAQStatus(req: VercelRequest, res: VercelResponse) {
+// POST - Approve/Reject FAQ or Create new FAQ
+async function handlePost(req: VercelRequest, res: VercelResponse) {
   const redis = await getRedis()
   if (!redis) {
     return res.status(500).json({ error: 'Redis not configured' })
   }
 
-  const { id, action, editedQuestion, editedAnswer } = req.body
+  const { id, action, question, answer, category, agent, editedQuestion, editedAnswer } = req.body
 
-  if (!id || !action) {
-    return res.status(400).json({ error: 'Missing id or action' })
+  // If action is provided, it's an approve/reject request
+  if (action) {
+    if (!id) {
+      return res.status(400).json({ error: 'Missing id' })
+    }
+
+    if (!['approve', 'reject'].includes(action)) {
+      return res.status(400).json({ error: 'Action must be approve or reject' })
+    }
+
+    try {
+      const faq = await redis.get<FAQEntry>(`faq:pending:${id}`)
+      if (!faq) {
+        return res.status(404).json({ error: 'FAQ not found' })
+      }
+
+      if (action === 'approve') {
+        const approvedFAQ: FAQEntry = {
+          ...faq,
+          question: editedQuestion || faq.question,
+          answer: editedAnswer || faq.answer,
+          status: 'approved',
+          approvedAt: Date.now(),
+          approvedBy: 'admin',
+        }
+
+        await redis.set(`faq:approved:${id}`, approvedFAQ, { ex: 86400 * 365 })
+        await redis.lpush('faq:approved:list', id)
+        await redis.del(`faq:pending:${id}`)
+        await redis.lrem('faq:pending:list', 1, id)
+
+        return res.status(200).json({
+          success: true,
+          message: 'FAQ approved',
+          faq: approvedFAQ,
+        })
+      } else {
+        await redis.del(`faq:pending:${id}`)
+        await redis.lrem('faq:pending:list', 1, id)
+
+        return res.status(200).json({
+          success: true,
+          message: 'FAQ rejected',
+        })
+      }
+    } catch (error) {
+      console.error('Update FAQ status error:', error)
+      return res.status(500).json({ error: 'Failed to update FAQ status' })
+    }
   }
 
-  if (!['approve', 'reject'].includes(action)) {
-    return res.status(400).json({ error: 'Action must be approve or reject' })
+  // Otherwise, it's a create request
+  if (!question || !answer || !category || !agent) {
+    return res.status(400).json({ error: 'Missing required fields: question, answer, category, agent' })
   }
 
   try {
-    // Get the FAQ from pending
-    const faq = await redis.get<FAQEntry>(`faq:pending:${id}`)
-    if (!faq) {
+    const faqId = `faq-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+    const now = Date.now()
+
+    const newFAQ: FAQEntry = {
+      id: faqId,
+      question,
+      answer,
+      category,
+      agent,
+      frequency: 0,
+      status: 'approved',
+      createdAt: now,
+      approvedAt: now,
+      approvedBy: 'admin',
+    }
+
+    await redis.set(`faq:approved:${faqId}`, newFAQ, { ex: 86400 * 365 })
+    await redis.lpush('faq:approved:list', faqId)
+
+    return res.status(201).json({
+      success: true,
+      message: 'FAQ created',
+      faq: newFAQ,
+    })
+  } catch (error) {
+    console.error('Create FAQ error:', error)
+    return res.status(500).json({ error: 'Failed to create FAQ' })
+  }
+}
+
+// PUT - Update existing FAQ
+async function updateFAQ(req: VercelRequest, res: VercelResponse) {
+  const redis = await getRedis()
+  if (!redis) {
+    return res.status(500).json({ error: 'Redis not configured' })
+  }
+
+  const { id } = req.query
+  if (!id || typeof id !== 'string') {
+    return res.status(400).json({ error: 'Missing FAQ id' })
+  }
+
+  const { question, answer, category, agent } = req.body
+
+  try {
+    const existing = await redis.get<FAQEntry>(`faq:approved:${id}`)
+    if (!existing) {
       return res.status(404).json({ error: 'FAQ not found' })
     }
 
-    if (action === 'approve') {
-      // Update FAQ
-      const approvedFAQ: FAQEntry = {
-        ...faq,
-        question: editedQuestion || faq.question,
-        answer: editedAnswer || faq.answer,
-        status: 'approved',
-        approvedAt: Date.now(),
-        approvedBy: 'admin',
-      }
-
-      // Move to approved
-      await redis.set(`faq:approved:${id}`, approvedFAQ, { ex: 86400 * 365 }) // 1 year
-      await redis.lpush('faq:approved:list', id)
-
-      // Remove from pending
-      await redis.del(`faq:pending:${id}`)
-      await redis.lrem('faq:pending:list', 1, id)
-
-      return res.status(200).json({
-        success: true,
-        message: 'FAQ approved',
-        faq: approvedFAQ,
-      })
-    } else {
-      // Reject - just remove from pending
-      await redis.del(`faq:pending:${id}`)
-      await redis.lrem('faq:pending:list', 1, id)
-
-      return res.status(200).json({
-        success: true,
-        message: 'FAQ rejected',
-      })
+    const updatedFAQ: FAQEntry = {
+      ...existing,
+      question: question || existing.question,
+      answer: answer || existing.answer,
+      category: category || existing.category,
+      agent: agent || existing.agent,
     }
+
+    await redis.set(`faq:approved:${id}`, updatedFAQ, { ex: 86400 * 365 })
+
+    return res.status(200).json({
+      success: true,
+      message: 'FAQ updated',
+      faq: updatedFAQ,
+    })
   } catch (error) {
-    console.error('Update FAQ status error:', error)
-    return res.status(500).json({ error: 'Failed to update FAQ status' })
+    console.error('Update FAQ error:', error)
+    return res.status(500).json({ error: 'Failed to update FAQ' })
   }
 }
 
@@ -210,7 +283,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     case 'GET':
       return listFAQs(req, res)
     case 'POST':
-      return updateFAQStatus(req, res)
+      return handlePost(req, res)
+    case 'PUT':
+      return updateFAQ(req, res)
     case 'DELETE':
       return deleteFAQ(req, res)
     default:
