@@ -166,6 +166,46 @@ async function smartRoute(message: string): Promise<AgentId> {
   return routeByLLM(message)
 }
 
+// Check if message should be redirected to another agent (mid-conversation re-routing)
+function shouldRedirect(message: string, currentAgent: AgentId): AgentId | null {
+  const lowerMessage = message.toLowerCase()
+
+  // Technical keywords that should ALWAYS go to Marc
+  const technicalKeywords = [
+    'rag', 'llm', 'api', 'intégration', 'integration', 'installer', 'installation',
+    'technique', 'techniquement', 'outil', 'outils', 'code', 'développer', 'chatgpt',
+    'copilot', 'claude', 'erp', 'crm', 'sharepoint', 'automatisation', 'workflow',
+    'fine-tuning', 'fine tuning', 'prompt', 'embedding', 'vector', 'elasticsearch',
+    'architecture', 'connecteur', 'indexer', 'indexation'
+  ]
+
+  // If current agent is not Marc and message contains technical keywords
+  if (currentAgent !== 'marc') {
+    const hasTechnicalKeyword = technicalKeywords.some(kw => lowerMessage.includes(kw))
+    if (hasTechnicalKeyword) {
+      return 'marc'
+    }
+  }
+
+  // Project/methodology keywords that should go to Sophie
+  const projectKeywords = [
+    'étape', 'etape', 'planning', 'durée', 'duree', 'combien de temps',
+    'méthodologie', 'methodologie', 'gouvernance', 'loi 25', 'rgpd',
+    'formation', 'équipe', 'equipe', 'accompagnement', 'livrable'
+  ]
+
+  if (currentAgent !== 'sophie') {
+    const hasProjectKeyword = projectKeywords.some(kw => lowerMessage.includes(kw))
+    // Only redirect if it's clearly a project question (2+ keywords)
+    const projectScore = projectKeywords.filter(kw => lowerMessage.includes(kw)).length
+    if (projectScore >= 2) {
+      return 'sophie'
+    }
+  }
+
+  return null // No redirect needed
+}
+
 // Get conversation from Redis
 async function getConversation(sessionId: string): Promise<TeamConversationState | null> {
   const client = await getRedis()
@@ -345,7 +385,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       })
     }
 
-    // Check if agent changed (either by user choice or auto-routing)
+    // Mid-conversation re-routing: check if message should go to a different agent
+    const redirectAgent = shouldRedirect(sanitizedMessage, targetAgent)
+    if (redirectAgent && redirectAgent !== targetAgent) {
+      targetAgent = redirectAgent
+    }
+
+    // Check if agent changed (either by user choice, auto-routing, or mid-conversation redirect)
     const agentChanged = state.currentAgent !== targetAgent
     if (agentChanged) {
       // Add switch context message
