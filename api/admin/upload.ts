@@ -94,25 +94,37 @@ async function uploadImage(req: VercelRequest, res: VercelResponse) {
     const timestamp = Date.now()
     const publicId = `orphea/${timestamp}-${Math.random().toString(36).substr(2, 9)}`
 
-    // Upload to Cloudinary
-    const result = await new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {
+    // Upload to Cloudinary with eager transformation for resizing
+    const result = await new Promise<{ secure_url: string; public_id: string; eager?: Array<{ secure_url: string }> }>((resolve, reject) => {
       cloudinary.uploader.upload(
         `data:${contentType};base64,${data}`,
         {
           public_id: publicId,
           folder: 'orphea-conseil',
           resource_type: 'image',
+          eager: [
+            {
+              width: 1200,
+              height: 800,
+              crop: 'limit',
+              quality: 'auto',
+            }
+          ],
+          eager_async: false,
         },
         (error, result) => {
           if (error) reject(error)
-          else resolve(result as { secure_url: string; public_id: string })
+          else resolve(result as { secure_url: string; public_id: string; eager?: Array<{ secure_url: string }> })
         }
       )
     })
 
+    // Use the eager transformed URL if available, otherwise use original
+    const imageUrl = result.eager?.[0]?.secure_url || result.secure_url
+
     return res.status(200).json({
       success: true,
-      url: result.secure_url,
+      url: imageUrl,
       publicId: result.public_id,
     })
   } catch (error: unknown) {

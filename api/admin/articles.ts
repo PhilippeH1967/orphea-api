@@ -39,7 +39,7 @@ const articleSchema = z.object({
   content: z.string().min(1),
   category: z.string().min(1),
   tags: z.array(z.string()).optional().default([]),
-  coverImage: z.string().optional(),
+  coverImage: z.string().nullable().optional(),
   status: z.enum(['draft', 'published', 'archived']).default('draft'),
   seo: z.object({
     metaTitle: z.string().optional(),
@@ -215,9 +215,13 @@ async function handlePut(req: VercelRequest, res: VercelResponse) {
     const data = articleSchema.partial().parse(req.body)
     const now = Date.now()
 
+    // Handle null coverImage (means image was removed)
+    const coverImage = data.coverImage === null ? undefined : (data.coverImage ?? existing.coverImage)
+
     const updated: BlogArticle = {
       ...existing,
       ...data,
+      coverImage,
       updatedAt: now,
       // Set publishedAt if newly published
       publishedAt: data.status === 'published' && !existing.publishedAt
