@@ -115,12 +115,17 @@ async function uploadImage(req: VercelRequest, res: VercelResponse) {
       url: result.secure_url,
       publicId: result.public_id,
     })
-  } catch (error) {
+  } catch (error: unknown) {
     console.error('Upload error:', error)
-    const errorMessage = error instanceof Error ? error.message : String(error)
+    let details = 'Unknown error'
+    if (error instanceof Error) {
+      details = error.message
+    } else if (typeof error === 'object' && error !== null) {
+      details = JSON.stringify(error)
+    }
     return res.status(500).json({
       error: 'Failed to upload image',
-      details: errorMessage
+      details
     })
   }
 }
