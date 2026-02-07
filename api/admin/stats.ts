@@ -61,8 +61,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Default stats
     let stats = {
-      blog: 3,
-      blogPublished: 3,
+      blog: 0,
+      blogPublished: 0,
       blogDraft: 0,
       podcast: 0,
       podcastPublished: 0,
@@ -97,8 +97,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
         }
       }
-      stats.blog = articleIds.length || 3
-      stats.blogPublished = publishedArticles || 3
+      stats.blog = articleIds.length
+      stats.blogPublished = publishedArticles
       stats.blogDraft = draftArticles
 
       // Count podcasts
