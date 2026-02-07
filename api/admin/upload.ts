@@ -117,7 +117,11 @@ async function uploadImage(req: VercelRequest, res: VercelResponse) {
     })
   } catch (error) {
     console.error('Upload error:', error)
-    return res.status(500).json({ error: 'Failed to upload image' })
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    return res.status(500).json({
+      error: 'Failed to upload image',
+      details: errorMessage
+    })
   }
 }
 
