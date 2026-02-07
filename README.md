@@ -64,3 +64,4 @@ vercel
 - reCAPTCHA v3
 - Honeypot anti-bot
 - Protection injection prompt
+# Trigger redeploy
