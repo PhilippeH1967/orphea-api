@@ -1,10 +1,17 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { put, del } from '@vercel/blob'
+import { v2 as cloudinary } from 'cloudinary'
 
 /**
- * API Admin pour l'upload d'images via Vercel Blob
+ * API Admin pour l'upload d'images via Cloudinary
  * Sprint 3 - US-11: Upload images de couverture
  */
+
+// Configure Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+})
 
 // Configuration
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || 'dev-admin-key'
@@ -63,21 +70,30 @@ async function uploadImage(req: VercelRequest, res: VercelResponse) {
       })
     }
 
-    // Generate unique filename
+    // Generate unique public_id
     const timestamp = Date.now()
-    const ext = filename.split('.').pop() || 'jpg'
-    const uniqueFilename = `orphea/${timestamp}-${Math.random().toString(36).substr(2, 9)}.${ext}`
+    const publicId = `orphea/${timestamp}-${Math.random().toString(36).substr(2, 9)}`
 
-    // Upload to Vercel Blob
-    const blob = await put(uniqueFilename, buffer, {
-      contentType,
-      access: 'public',
+    // Upload to Cloudinary
+    const result = await new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {
+      cloudinary.uploader.upload(
+        `data:${contentType};base64,${data}`,
+        {
+          public_id: publicId,
+          folder: 'orphea-conseil',
+          resource_type: 'image',
+        },
+        (error, result) => {
+          if (error) reject(error)
+          else resolve(result as { secure_url: string; public_id: string })
+        }
+      )
     })
 
     return res.status(200).json({
       success: true,
-      url: blob.url,
-      filename: uniqueFilename,
+      url: result.secure_url,
+      publicId: result.public_id,
     })
   } catch (error) {
     console.error('Upload error:', error)
@@ -88,13 +104,30 @@ async function uploadImage(req: VercelRequest, res: VercelResponse) {
 // DELETE - Delete image
 async function deleteImage(req: VercelRequest, res: VercelResponse) {
   try {
-    const { url } = req.query
+    const { url, publicId } = req.query
 
-    if (!url || typeof url !== 'string') {
-      return res.status(400).json({ error: 'Missing image URL' })
+    // Extract public_id from URL if not provided directly
+    let imagePublicId = publicId as string
+
+    if (!imagePublicId && url && typeof url === 'string') {
+      // Extract public_id from Cloudinary URL
+      // Format: https://res.cloudinary.com/cloud_name/image/upload/v123/folder/filename.ext
+      const match = url.match(/\/upload\/(?:v\d+\/)?(.+)\.[^.]+$/)
+      if (match) {
+        imagePublicId = match[1]
+      }
     }
 
-    await del(url)
+    if (!imagePublicId) {
+      return res.status(400).json({ error: 'Missing image URL or publicId' })
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      cloudinary.uploader.destroy(imagePublicId, (error, result) => {
+        if (error) reject(error)
+        else resolve()
+      })
+    })
 
     return res.status(200).json({
       success: true,
